@@ -25,8 +25,89 @@ type Task = Box<dyn FnOnce(CancellationToken) -> BoxFuture<Result<(), String>> +
 type Check = Box<dyn Fn() -> BoxFuture<Result<(), String>> + Send + Sync>;
 
 /// Builds the OpenAPI document from every `#[get]`/`#[post]`/... route in the binary.
-pub fn openapi(title: &str, version: &str, session_cookie: Option<&str>) -> OpenApi {
-    collect(title, version, session_cookie).1
+pub fn openapi(title: &str, version: &str, session_cookie: Option<&str>) -> serde_json::Value {
+    let mut spec = serde_json::to_value(collect(title, version, session_cookie).1).expect("OpenAPI serializes");
+    require_response_fields(&mut spec);
+    spec
+}
+
+/// serde always writes every field of a response (as `null` when empty), but utoipa marks
+/// `Option` fields optional. Mark all properties required in schemas that only appear in
+/// responses, so generated clients see `T | null` instead of `T | null | undefined`.
+/// Schemas also used in request bodies keep their optional fields.
+fn require_response_fields(spec: &mut serde_json::Value) {
+    use serde_json::Value;
+    use std::collections::HashSet;
+
+    fn refs(schema: &Value, components: &Value, seen: &mut HashSet<String>) {
+        match schema {
+            Value::Object(map) => {
+                if let Some(Value::String(r)) = map.get("$ref") {
+                    let name = r.rsplit('/').next().unwrap_or_default().to_string();
+                    if seen.insert(name.clone()) {
+                        if let Some(target) = components.get(&name) {
+                            refs(target, components, seen);
+                        }
+                    }
+                }
+                map.values().for_each(|v| refs(v, components, seen));
+            }
+            Value::Array(items) => items.iter().for_each(|v| refs(v, components, seen)),
+            _ => {}
+        }
+    }
+
+    fn require(schema: &mut Value, skip: &HashSet<String>, components: &mut Value, done: &mut HashSet<String>) {
+        match schema {
+            Value::Object(map) => {
+                if let Some(Value::String(r)) = map.get("$ref") {
+                    let name = r.rsplit('/').next().unwrap_or_default().to_string();
+                    if !skip.contains(&name) && done.insert(name.clone()) {
+                        if let Some(mut target) = components.get(&name).cloned() {
+                            require(&mut target, skip, components, done);
+                            components[&name] = target;
+                        }
+                    }
+                    return;
+                }
+                if let Some(Value::Object(props)) = map.get("properties") {
+                    let names: Vec<Value> = props.keys().cloned().map(Value::String).collect();
+                    map.insert("required".into(), Value::Array(names));
+                }
+                for value in map.values_mut() {
+                    require(value, skip, components, done);
+                }
+            }
+            Value::Array(items) => items.iter_mut().for_each(|v| require(v, skip, components, done)),
+            _ => {}
+        }
+    }
+
+    let mut components = spec.pointer("/components/schemas").cloned().unwrap_or(Value::Null);
+    let mut request = HashSet::new();
+    for item in spec["paths"].as_object().into_iter().flat_map(|p| p.values()) {
+        for op in item.as_object().into_iter().flat_map(|o| o.values()) {
+            if let Some(body) = op.get("requestBody") {
+                refs(body, &components, &mut request);
+            }
+            for p in op.get("parameters").and_then(Value::as_array).into_iter().flatten() {
+                refs(p, &components, &mut request);
+            }
+        }
+    }
+    let mut done = HashSet::new();
+    if let Some(paths) = spec.get_mut("paths") {
+        for item in paths.as_object_mut().into_iter().flat_map(|p| p.values_mut()) {
+            for op in item.as_object_mut().into_iter().flat_map(|o| o.values_mut()) {
+                if let Some(r) = op.get_mut("responses") {
+                    require(r, &request, &mut components, &mut done);
+                }
+            }
+        }
+    }
+    if let Some(slot) = spec.pointer_mut("/components/schemas") {
+        *slot = components;
+    }
 }
 
 fn collect(title: &str, version: &str, session_cookie: Option<&str>) -> (Router, OpenApi) {
@@ -144,6 +225,8 @@ impl Server {
 
     fn build(self) -> (Router, Vec<(String, Task)>, CancellationToken) {
         let (api, openapi) = collect(&self.title, &self.version, self.session_cookie.as_deref());
+        let mut openapi = serde_json::to_value(openapi).expect("OpenAPI serializes");
+        require_response_fields(&mut openapi);
         let api = api
             .layer(SetResponseHeaderLayer::if_not_present(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store")))
             .layer(middleware::from_fn(same_origin));
