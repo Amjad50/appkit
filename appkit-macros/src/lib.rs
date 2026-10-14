@@ -75,7 +75,7 @@ fn expand(method: &str, args: Args, item: ItemFn) -> syn::Result<Tokens> {
                 if is_params_struct(inner) {
                     params.push(inner.to_token_stream());
                 } else {
-                    params.extend(template_names(&path).into_iter().map(|n| quote!((#n))));
+                    params.extend(template_names(&path).into_iter().map(|n| quote!((#n, Path))));
                 }
             }
             ("Query", Some(inner)) => params.push(inner.to_token_stream()),
@@ -211,7 +211,7 @@ mod tests {
             r#""/api/admin/tags/{id}""#,
             "async fn save_tag(_a: Admin, Path(id): Path<String>, Json(b): Json<TagInput>) -> ApiResult<Json<Tag>> { todo!() }",
         );
-        assert!(out.contains("params ((\"id\"))"), "{out}");
+        assert!(out.contains("params ((\"id\" , Path))"), "{out}");
         assert!(out.contains("request_body = TagInput"), "{out}");
         assert!(out.contains("status = 200") && out.contains("body = Tag"), "{out}");
         assert!(out.contains("status = 401"), "{out}");
