@@ -1,4 +1,4 @@
-use std::future::Future;
+use std::future::{Future, IntoFuture};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::time::Duration;
@@ -100,8 +100,14 @@ fn collect(title: &str, version: &str) -> (Router, OpenApi) {
 }
 
 const TIMEOUT: Duration = Duration::from_secs(30);
+/// How long shutdown waits for open connections and for tasks.
+const DRAIN: Duration = Duration::from_secs(10);
 
 /// HTTP server with auto-registered routes, OpenAPI, docs, health checks and background tasks.
+///
+/// Handlers can take `Extension<CancellationToken>`, cancelled when shutdown begins.
+/// Long-lived responses (server-sent events, streams) must end then; shutdown waits for open
+/// connections for at most 10 seconds.
 pub struct Server {
     title: String,
     version: String,
@@ -110,6 +116,7 @@ pub struct Server {
     layers: Vec<Box<dyn FnOnce(Router) -> Router + Send>>,
     tasks: Vec<(String, Task)>,
     checks: Vec<(String, Check)>,
+    shutdown: CancellationToken,
 }
 
 impl Server {
@@ -122,6 +129,7 @@ impl Server {
             layers: Vec::new(),
             tasks: Vec::new(),
             checks: Vec::new(),
+            shutdown: CancellationToken::new(),
         }
     }
 
@@ -169,7 +177,7 @@ impl Server {
         self.build().0
     }
 
-    fn build(self) -> (Router, Vec<(String, Task)>) {
+    fn build(self) -> (Router, Vec<(String, Task)>, CancellationToken) {
         let (api, openapi) = collect(&self.title, &self.version);
         let mut openapi = serde_json::to_value(openapi).expect("OpenAPI serializes");
         require_response_fields(&mut openapi);
@@ -201,6 +209,7 @@ impl Server {
             router = layer(router);
         }
         let router = router
+            .layer(axum::Extension(self.shutdown.clone()))
             .layer(DefaultBodyLimit::max(self.body_limit))
             .layer(CompressionLayer::new())
             .layer(TimeoutLayer::with_status_code(axum::http::StatusCode::REQUEST_TIMEOUT, TIMEOUT))
@@ -210,15 +219,14 @@ impl Server {
                 let route = route.unwrap_or("-");
                 tracing::info_span!("http", otel.name = %name, method = %req.method(), route, path = %req.uri().path())
             }));
-        (router, self.tasks)
+        (router, self.tasks, self.shutdown)
     }
 
     /// Binds `addr` and serves until Ctrl-C/SIGTERM or until a task fails, then drains in-flight work.
     pub async fn serve(self, addr: SocketAddr) -> Result<(), String> {
         let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| format!("{addr}: {e}"))?;
         tracing::info!(addr = %listener.local_addr().unwrap_or(addr), "{} listening", self.title);
-        let (router, tasks) = self.build();
-        let token = CancellationToken::new();
+        let (router, tasks, token) = self.build();
         let mut set = JoinSet::new();
         for (name, task) in tasks {
             let token = token.clone();
@@ -232,16 +240,20 @@ impl Server {
             });
         }
         let stop = token.clone();
-        let served = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
-            .with_graceful_shutdown(async move {
-                tokio::select! { _ = shutdown_signal() => {}, _ = stop.cancelled() => {} }
-                stop.cancel();
-            })
-            .await
-            .map_err(|e| e.to_string());
+        let server = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).with_graceful_shutdown(async move {
+            tokio::select! { _ = shutdown_signal() => {}, _ = stop.cancelled() => {} }
+            stop.cancel();
+        });
+        let served = tokio::select! {
+            served = server.into_future() => served.map_err(|e| e.to_string()),
+            _ = async { token.cancelled().await; tokio::time::sleep(DRAIN).await } => {
+                tracing::warn!("connections still open after {DRAIN:?}; closing them");
+                Ok(())
+            }
+        };
         token.cancel();
         let mut failure = served.err();
-        while let Ok(Some(joined)) = tokio::time::timeout(Duration::from_secs(10), set.join_next()).await {
+        while let Ok(Some(joined)) = tokio::time::timeout(DRAIN, set.join_next()).await {
             if let Ok(Err(e)) = joined {
                 failure.get_or_insert(e);
             }
