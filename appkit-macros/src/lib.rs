@@ -1,13 +1,13 @@
 //! `#[get("/path")]`, `#[post(...)]`, ... for appkit.
 //!
 //! Each attribute keeps the handler as written and adds:
-//! 1. `#[utoipa::path(...)]`, inferred from the signature (params, body, responses, security, tag);
-//! 2. a `tracing` span named after the route;
-//! 3. an `inventory` entry so `appkit::Server` mounts the route and documents it.
+//! 1. `#[utoipa::path(...)]`, inferred from the signature (params, body, responses, tag);
+//! 2. an `inventory` entry so `appkit::Server` mounts the route and documents it, including
+//!    the security of every argument that implements `appkit::Security`.
 //!
 //! Inference reads syntax, not resolved types, so it recognises wrapper names exactly:
-//! `Path`, `Query`, `Json`, `Multipart`, `ApiResult`/`Result`, `Json<T>`, `StatusCode`, `()`,
-//! and an argument whose type is named `Admin` or `Auth` (adds the `session` security requirement).
+//! `Path`, `Query`, `Json`, `Multipart`, `ApiResult`/`Result`, `Json<T>`, `StatusCode`, `()`.
+//! Security is the exception: it is resolved by the compiler through `appkit::Security`.
 //! For handlers returning `impl IntoResponse`, name the success body with `ok = Type`.
 //! Anything else can be passed through: `#[post("/x", responses(...), request_body = ...)]`.
 
@@ -65,10 +65,11 @@ fn expand(method: &str, args: Args, item: ItemFn) -> syn::Result<Tokens> {
     let mut attrs: Vec<Tokens> = Vec::new();
     let mut params: Vec<Tokens> = Vec::new();
     let mut body: Option<Tokens> = None;
-    let mut secured = false;
+    let mut types: Vec<&Type> = Vec::new();
 
     for input in &item.sig.inputs {
         let FnArg::Typed(arg) = input else { continue };
+        types.push(&arg.ty);
         let Some((name, inner)) = wrapper(&arg.ty) else { continue };
         match (name.as_str(), inner) {
             ("Path", Some(inner)) => {
@@ -81,7 +82,6 @@ fn expand(method: &str, args: Args, item: ItemFn) -> syn::Result<Tokens> {
             ("Query", Some(inner)) => params.push(inner.to_token_stream()),
             ("Json", Some(inner)) => body = Some(quote!(request_body = #inner)),
             ("Multipart", _) => body = Some(quote!(request_body(content_type = "multipart/form-data"))),
-            ("Admin" | "Auth", _) => secured = true,
             _ => {}
         }
     }
@@ -99,16 +99,11 @@ fn expand(method: &str, args: Args, item: ItemFn) -> syn::Result<Tokens> {
             Some(ty) => quote!((status = 200, description = "Success", body = #ty)),
             None => success(&item.sig.output),
         };
-        let unauthorized = secured.then(|| quote!((status = 401, description = "Sign-in required", body = ::appkit::ApiError),));
         attrs.push(quote!(responses(
             #ok,
-            #unauthorized
             (status = "4XX", description = "Request rejected", body = ::appkit::ApiError),
             (status = "5XX", description = "Server error", body = ::appkit::ApiError),
         )));
-    }
-    if !given("security") && secured {
-        attrs.push(quote!(security(("session" = []))));
     }
     if !given("tag") && !given("tags") {
         let tag = tag_for(&path);
@@ -120,15 +115,20 @@ fn expand(method: &str, args: Args, item: ItemFn) -> syn::Result<Tokens> {
 
     let method_ident = format_ident!("{}", method);
     let ident = &item.sig.ident;
-    let span_name = format!("{} {}", method.to_uppercase(), path);
     let lit = &args.path;
     Ok(quote! {
         #[::utoipa::path(#method_ident, path = #lit, #(#attrs),*)]
-        #[::tracing::instrument(name = #span_name, skip_all)]
         #item
 
         ::appkit::inventory::submit! {
-            ::appkit::Route { register: |router| router.routes(::appkit::utoipa_axum::routes!(#ident)) }
+            ::appkit::Route {
+                register: |router| {
+                    use ::appkit::__private::{Secured as _, Unsecured as _};
+                    let mut security = ::std::vec::Vec::new();
+                    #(security.extend((&::appkit::__private::Probe::<#types>(::core::marker::PhantomData)).security());)*
+                    ::appkit::__private::register(router, ::appkit::utoipa_axum::routes!(#ident), security)
+                },
+            }
         }
     })
 }
@@ -214,8 +214,7 @@ mod tests {
         assert!(out.contains("params ((\"id\" , Path))"), "{out}");
         assert!(out.contains("request_body = TagInput"), "{out}");
         assert!(out.contains("status = 200") && out.contains("body = Tag"), "{out}");
-        assert!(out.contains("status = 401"), "{out}");
-        assert!(out.contains("security ((\"session\" = []))"), "{out}");
+        assert!(out.contains("Probe :: < Admin >") && out.contains("Probe :: < Path < String > >"), "{out}");
         assert!(out.contains("tag = \"tags\""), "{out}");
         assert!(out.contains("inventory :: submit"), "{out}");
     }
@@ -225,7 +224,6 @@ mod tests {
         let out = expand_str("get", r#""/api/equipment""#, "async fn get_equipment(Query(q): Query<EquipmentPage>) -> ApiResult<()> { todo!() }");
         assert!(out.contains("params (EquipmentPage)"), "{out}");
         assert!(out.contains("status = 204"), "{out}");
-        assert!(!out.contains("security"), "{out}");
     }
 
     #[test]

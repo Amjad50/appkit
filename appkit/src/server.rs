@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -14,8 +15,7 @@ use tower_http::compression::CompressionLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
-use utoipa::openapi::OpenApi;
-use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};
+use utoipa::openapi::{Info, OpenApi, Paths};
 use utoipa_axum::router::OpenApiRouter;
 
 use crate::{ApiError, Route};
@@ -25,8 +25,8 @@ type Task = Box<dyn FnOnce(CancellationToken) -> BoxFuture<Result<(), String>> +
 type Check = Box<dyn Fn() -> BoxFuture<Result<(), String>> + Send + Sync>;
 
 /// Builds the OpenAPI document from every `#[get]`/`#[post]`/... route in the binary.
-pub fn openapi(title: &str, version: &str, session_cookie: Option<&str>) -> serde_json::Value {
-    let mut spec = serde_json::to_value(collect(title, version, session_cookie).1).expect("OpenAPI serializes");
+pub fn openapi(title: &str, version: &str) -> serde_json::Value {
+    let mut spec = serde_json::to_value(collect(title, version).1).expect("OpenAPI serializes");
     require_response_fields(&mut spec);
     spec
 }
@@ -34,114 +34,82 @@ pub fn openapi(title: &str, version: &str, session_cookie: Option<&str>) -> serd
 /// serde always writes every field of a response (as `null` when empty), but utoipa marks
 /// `Option` fields optional. Mark all properties required in schemas that only appear in
 /// responses, so generated clients see `T | null` instead of `T | null | undefined`.
-/// Schemas also used in request bodies keep their optional fields.
+/// Schemas also reachable from request bodies or parameters keep their optional fields.
 fn require_response_fields(spec: &mut serde_json::Value) {
     use serde_json::Value;
     use std::collections::HashSet;
 
-    fn refs(schema: &Value, components: &Value, seen: &mut HashSet<String>) {
-        match schema {
+    fn refs(value: &Value, schemas: &Value, found: &mut HashSet<String>) {
+        match value {
             Value::Object(map) => {
-                if let Some(Value::String(r)) = map.get("$ref") {
-                    let name = r.rsplit('/').next().unwrap_or_default().to_string();
-                    if seen.insert(name.clone()) {
-                        if let Some(target) = components.get(&name) {
-                            refs(target, components, seen);
+                if let Some(name) = map.get("$ref").and_then(Value::as_str).and_then(|r| r.rsplit('/').next()) {
+                    if found.insert(name.to_string()) {
+                        if let Some(schema) = schemas.get(name) {
+                            refs(schema, schemas, found);
                         }
                     }
                 }
-                map.values().for_each(|v| refs(v, components, seen));
+                map.values().for_each(|v| refs(v, schemas, found));
             }
-            Value::Array(items) => items.iter().for_each(|v| refs(v, components, seen)),
+            Value::Array(items) => items.iter().for_each(|v| refs(v, schemas, found)),
             _ => {}
         }
     }
 
-    fn require(schema: &mut Value, skip: &HashSet<String>, components: &mut Value, done: &mut HashSet<String>) {
-        match schema {
+    fn require(value: &mut Value) {
+        match value {
             Value::Object(map) => {
-                if let Some(Value::String(r)) = map.get("$ref") {
-                    let name = r.rsplit('/').next().unwrap_or_default().to_string();
-                    if !skip.contains(&name) && done.insert(name.clone()) {
-                        if let Some(mut target) = components.get(&name).cloned() {
-                            require(&mut target, skip, components, done);
-                            components[&name] = target;
-                        }
-                    }
-                    return;
-                }
                 if let Some(Value::Object(props)) = map.get("properties") {
-                    let names: Vec<Value> = props.keys().cloned().map(Value::String).collect();
+                    let names = props.keys().cloned().map(Value::String).collect();
                     map.insert("required".into(), Value::Array(names));
                 }
-                for value in map.values_mut() {
-                    require(value, skip, components, done);
-                }
+                map.values_mut().for_each(require);
             }
-            Value::Array(items) => items.iter_mut().for_each(|v| require(v, skip, components, done)),
+            Value::Array(items) => items.iter_mut().for_each(require),
             _ => {}
         }
     }
 
-    let mut components = spec.pointer("/components/schemas").cloned().unwrap_or(Value::Null);
+    let schemas = spec.pointer("/components/schemas").cloned().unwrap_or_default();
     let mut request = HashSet::new();
-    for item in spec["paths"].as_object().into_iter().flat_map(|p| p.values()) {
-        for op in item.as_object().into_iter().flat_map(|o| o.values()) {
-            if let Some(body) = op.get("requestBody") {
-                refs(body, &components, &mut request);
-            }
-            for p in op.get("parameters").and_then(Value::as_array).into_iter().flatten() {
-                refs(p, &components, &mut request);
-            }
-        }
-    }
-    let mut done = HashSet::new();
-    if let Some(paths) = spec.get_mut("paths") {
-        for item in paths.as_object_mut().into_iter().flat_map(|p| p.values_mut()) {
-            for op in item.as_object_mut().into_iter().flat_map(|o| o.values_mut()) {
-                if let Some(r) = op.get_mut("responses") {
-                    require(r, &request, &mut components, &mut done);
+    for item in spec["paths"].as_object_mut().into_iter().flat_map(|p| p.values_mut()) {
+        for op in item.as_object_mut().into_iter().flat_map(|o| o.values_mut()) {
+            for key in ["requestBody", "parameters"] {
+                if let Some(value) = op.get(key) {
+                    refs(value, &schemas, &mut request);
                 }
             }
+            if let Some(responses) = op.get_mut("responses") {
+                require(responses);
+            }
         }
     }
-    if let Some(slot) = spec.pointer_mut("/components/schemas") {
-        *slot = components;
+    if let Some(Value::Object(schemas)) = spec.pointer_mut("/components/schemas") {
+        for (_, schema) in schemas.iter_mut().filter(|(name, _)| !request.contains(*name)) {
+            require(schema);
+        }
     }
 }
 
-fn collect(title: &str, version: &str, session_cookie: Option<&str>) -> (Router, OpenApi) {
-    let mut routes = OpenApiRouter::new();
+fn collect(title: &str, version: &str) -> (Router, OpenApi) {
+    let mut routes = OpenApiRouter::with_openapi(OpenApi::new(Info::new(title, version), Paths::new()));
     for route in inventory::iter::<Route> {
         routes = (route.register)(routes);
     }
-    let (router, mut api) = routes.split_for_parts();
-    api.info.title = title.to_string();
-    api.info.version = version.to_string();
-    api.info.description = None;
-    api.info.license = None;
-    api.info.contact = None;
-    if let Some(cookie) = session_cookie {
-        api.components
-            .get_or_insert_with(Default::default)
-            .add_security_scheme("session", SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new(cookie))));
-    }
-    (router, api)
+    routes.split_for_parts()
 }
+
+const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// HTTP server with auto-registered routes, OpenAPI, docs, health checks and background tasks.
 pub struct Server {
     title: String,
     version: String,
-    session_cookie: Option<String>,
-    docs_script: Option<String>,
     body_limit: usize,
-    timeout: Duration,
     extra: Router,
     layers: Vec<Box<dyn FnOnce(Router) -> Router + Send>>,
     tasks: Vec<(String, Task)>,
     checks: Vec<(String, Check)>,
-    shutdown: CancellationToken,
 }
 
 impl Server {
@@ -149,34 +117,17 @@ impl Server {
         Self {
             title: title.into(),
             version: version.into(),
-            session_cookie: None,
-            docs_script: Some("https://cdn.jsdelivr.net/npm/@scalar/api-reference".into()),
             body_limit: 2 * 1024 * 1024,
-            timeout: Duration::from_secs(30),
             extra: Router::new(),
             layers: Vec::new(),
             tasks: Vec::new(),
             checks: Vec::new(),
-            shutdown: CancellationToken::new(),
         }
     }
 
     /// Makes `appkit::State<T>` available to every route.
     pub fn state<T: Clone + Send + Sync + 'static>(mut self, value: T) -> Self {
         self.layers.push(Box::new(move |r| r.layer(axum::Extension(value))));
-        self
-    }
-
-    /// Documents cookie-based session auth as the `session` security scheme.
-    pub fn session_cookie(mut self, name: impl Into<String>) -> Self {
-        self.session_cookie = Some(name.into());
-        self
-    }
-
-    /// Script URL for the docs page at `/api/docs`; `None` disables the page.
-    /// Serve the Scalar standalone bundle yourself to work without internet.
-    pub fn docs(mut self, script_url: Option<String>) -> Self {
-        self.docs_script = script_url;
         self
     }
 
@@ -213,31 +164,23 @@ impl Server {
         self
     }
 
-    /// Token cancelled when the server begins shutting down.
-    pub fn shutdown_token(&self) -> CancellationToken {
-        self.shutdown.clone()
-    }
-
     /// The fully assembled router, without serving it (used by tests).
     pub fn into_router(self) -> Router {
         self.build().0
     }
 
-    fn build(self) -> (Router, Vec<(String, Task)>, CancellationToken) {
-        let (api, openapi) = collect(&self.title, &self.version, self.session_cookie.as_deref());
+    fn build(self) -> (Router, Vec<(String, Task)>) {
+        let (api, openapi) = collect(&self.title, &self.version);
         let mut openapi = serde_json::to_value(openapi).expect("OpenAPI serializes");
         require_response_fields(&mut openapi);
-        let api = api
-            .layer(SetResponseHeaderLayer::if_not_present(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store")))
-            .layer(middleware::from_fn(same_origin));
         let spec = serde_json::to_string(&openapi).expect("OpenAPI serializes");
-        let mut router = api.route("/api/openapi.json", get(move || async move { ([(header::CONTENT_TYPE, "application/json")], spec) }));
-        if let Some(script) = self.docs_script {
-            let page = Html(DOCS.replace("{title}", &self.title).replace("{script}", &script));
-            router = router.route("/api/docs", get(move || async move { page }));
-        }
+        let docs = Html(DOCS.replace("{title}", &self.title));
         let checks = std::sync::Arc::new(self.checks);
-        router = router
+        let mut router = api
+            .layer(SetResponseHeaderLayer::if_not_present(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store")))
+            .layer(middleware::from_fn(same_origin))
+            .route("/api/openapi.json", get(move || async move { ([(header::CONTENT_TYPE, "application/json")], spec) }))
+            .route("/api/docs", get(move || async move { docs }))
             .route("/healthz", get(|| async { "ok" }))
             .route(
                 "/readyz",
@@ -260,23 +203,22 @@ impl Server {
         let router = router
             .layer(DefaultBodyLimit::max(self.body_limit))
             .layer(CompressionLayer::new())
-            .layer(TimeoutLayer::with_status_code(axum::http::StatusCode::REQUEST_TIMEOUT, self.timeout))
+            .layer(TimeoutLayer::with_status_code(axum::http::StatusCode::REQUEST_TIMEOUT, TIMEOUT))
             .layer(TraceLayer::new_for_http().make_span_with(|req: &Request| {
-                let route = req.extensions().get::<MatchedPath>().map(|p| p.as_str()).unwrap_or("-");
-                tracing::info_span!("http", method = %req.method(), route, path = %req.uri().path())
+                let route = req.extensions().get::<MatchedPath>().map(|p| p.as_str());
+                let name = route.map_or_else(|| req.method().to_string(), |r| format!("{} {r}", req.method()));
+                let route = route.unwrap_or("-");
+                tracing::info_span!("http", otel.name = %name, method = %req.method(), route, path = %req.uri().path())
             }));
-        (router, self.tasks, self.shutdown)
+        (router, self.tasks)
     }
 
-    /// Serves until Ctrl-C/SIGTERM or until a task fails, then drains in-flight work.
-    pub async fn serve<L>(self, listener: L) -> Result<(), String>
-    where
-        L: axum::serve::Listener<Addr = std::net::SocketAddr>,
-    {
-        use axum::serve::ListenerExt;
-        // `tap_io` gives any listener (plain TCP or TLS) axum's ConnectInfo support.
-        let listener = listener.tap_io(|_| {});
-        let (router, tasks, token) = self.build();
+    /// Binds `addr` and serves until Ctrl-C/SIGTERM or until a task fails, then drains in-flight work.
+    pub async fn serve(self, addr: SocketAddr) -> Result<(), String> {
+        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| format!("{addr}: {e}"))?;
+        tracing::info!(addr = %listener.local_addr().unwrap_or(addr), "{} listening", self.title);
+        let (router, tasks) = self.build();
+        let token = CancellationToken::new();
         let mut set = JoinSet::new();
         for (name, task) in tasks {
             let token = token.clone();
@@ -289,14 +231,12 @@ impl Server {
                 result.map_err(|e| format!("{name}: {e}"))
             });
         }
-        let signal = token.clone();
-        tokio::spawn(async move {
-            tokio::select! { _ = shutdown_signal() => {}, _ = signal.cancelled() => {} }
-            signal.cancel();
-        });
         let stop = token.clone();
-        let served = axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>())
-            .with_graceful_shutdown(async move { stop.cancelled().await })
+        let served = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
+            .with_graceful_shutdown(async move {
+                tokio::select! { _ = shutdown_signal() => {}, _ = stop.cancelled() => {} }
+                stop.cancel();
+            })
             .await
             .map_err(|e| e.to_string());
         token.cancel();
@@ -337,8 +277,9 @@ async fn same_origin(req: Request, next: Next) -> Response {
     next.run(req).await
 }
 
+/// Scalar's API reference, loaded from its CDN by the viewing browser.
 const DOCS: &str = r#"<!doctype html>
 <html><head><meta charset="utf-8"><title>{title} API</title>
 <meta name="viewport" content="width=device-width, initial-scale=1"></head>
 <body><script id="api-reference" data-url="/api/openapi.json"></script>
-<script src="{script}"></script></body></html>"#;
+<script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@1"></script></body></html>"#;

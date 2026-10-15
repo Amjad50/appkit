@@ -48,28 +48,53 @@ impl std::fmt::Display for ApiError {
     }
 }
 
-impl std::error::Error for ApiError {}
-
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.status, Json(self)).into_response()
     }
 }
 
-/// Malformed JSON, query strings and path parameters become `{ message }` 400s too.
-macro_rules! rejection {
-    ($($ty:ty),*) => {$(
-        impl From<$ty> for ApiError {
-            fn from(rejection: $ty) -> Self {
-                Self::new(rejection.status(), rejection.body_text())
-            }
-        }
-    )*};
+/// `?` works on any error. Extractor rejections keep their status and message; everything
+/// else (database, IO, ...) is logged and becomes a generic 500.
+/// `ApiError` itself is deliberately not a `std::error::Error`, so this impl is allowed.
+impl<E: std::error::Error + 'static> From<E> for ApiError {
+    fn from(error: E) -> Self {
+        rejection(&error).unwrap_or_else(|| Self::internal(error))
+    }
 }
-rejection!(
-    axum::extract::rejection::JsonRejection,
-    axum::extract::rejection::QueryRejection,
-    axum::extract::rejection::PathRejection,
-    axum::extract::multipart::MultipartRejection,
-    axum::extract::multipart::MultipartError
-);
+
+/// Malformed JSON, query strings, path parameters and multipart bodies are the client's fault.
+fn rejection(error: &dyn std::any::Any) -> Option<ApiError> {
+    macro_rules! rejection {
+        ($($ty:ty),*) => {$(
+            if let Some(rejection) = error.downcast_ref::<$ty>() {
+                return Some(ApiError::new(rejection.status(), rejection.body_text()));
+            }
+        )*};
+    }
+    rejection!(
+        axum::extract::rejection::JsonRejection,
+        axum::extract::rejection::QueryRejection,
+        axum::extract::rejection::PathRejection,
+        axum::extract::multipart::MultipartRejection,
+        axum::extract::multipart::MultipartError
+    );
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ApiError;
+    use axum::http::StatusCode;
+
+    #[tokio::test]
+    async fn question_mark_keeps_rejections_and_hides_other_errors() {
+        use axum::extract::FromRequest;
+        let request = axum::http::Request::new(axum::body::Body::empty());
+        let rejection = axum::Json::<serde_json::Value>::from_request(request, &()).await.unwrap_err();
+        assert_eq!(ApiError::from(rejection).status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        let io = ApiError::from(std::io::Error::other("disk on fire"));
+        assert_eq!(io.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(!io.message.contains("disk"));
+    }
+}

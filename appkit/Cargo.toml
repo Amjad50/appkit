@@ -4,24 +4,21 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "A small summer-like layer over axum: auto-registered routes, OpenAPI, config, telemetry, tasks."
+description = "A small layer over axum: auto-registered routes, OpenAPI, config, telemetry, tasks."
 
 [dependencies]
 appkit-macros = { version = "0.1.0", path = "../appkit-macros" }
-axum = { version = "0.8", features = ["macros", "multipart"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "matched-path", "multipart", "query", "tokio"] }
 config = { version = "0.15", default-features = false }
 dotenvy = "0.15.7"
-futures-util = "0.3.34"
 inventory = "0.3.25"
 opentelemetry = { version = "0.33.1", optional = true }
 opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["grpc-tonic", "trace", "metrics"], optional = true }
 opentelemetry_sdk = { version = "0.33.1", optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-thiserror = "2.0.21"
-tokio = { version = "1.53.3", features = ["full"] }
+tokio = { version = "1.53.3", features = ["macros", "net", "rt", "signal", "time"] }
 tokio-util = { version = "0.7.20", features = ["rt"] }
-tower = "0.5.3"
 tower-http = { version = "0.7", features = ["trace", "compression-gzip", "limit", "timeout", "set-header"] }
 tracing = "0.1.44"
 tracing-opentelemetry = { version = "0.34.0", optional = true }
