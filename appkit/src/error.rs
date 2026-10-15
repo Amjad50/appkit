@@ -63,7 +63,7 @@ impl<E: std::error::Error + 'static> From<E> for ApiError {
     }
 }
 
-/// Malformed JSON, query strings, path parameters and multipart bodies are the client's fault.
+/// Malformed JSON, forms, query strings, path parameters and multipart bodies are the client's fault.
 fn rejection(error: &dyn std::any::Any) -> Option<ApiError> {
     macro_rules! rejection {
         ($($ty:ty),*) => {$(
@@ -74,6 +74,7 @@ fn rejection(error: &dyn std::any::Any) -> Option<ApiError> {
     }
     rejection!(
         axum::extract::rejection::JsonRejection,
+        axum::extract::rejection::FormRejection,
         axum::extract::rejection::QueryRejection,
         axum::extract::rejection::PathRejection,
         axum::extract::multipart::MultipartRejection,

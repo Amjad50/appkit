@@ -6,7 +6,7 @@
 //!    the security of every argument that implements `appkit::Security`.
 //!
 //! Inference reads syntax, not resolved types, so it recognises wrapper names exactly:
-//! `Path`, `Query`, `Json`, `Multipart`, `ApiResult`/`Result`, `Json<T>`, `StatusCode`, `()`.
+//! `Path`, `Query`, `Json`, `Form`, `Multipart`, `ApiResult`/`Result`, `Json<T>`, `StatusCode`, `()`.
 //! Security is the exception: it is resolved by the compiler through `appkit::Security`.
 //! For handlers returning `impl IntoResponse`, name the success body with `ok = Type`.
 //! Anything else can be passed through: `#[post("/x", responses(...), request_body = ...)]`.
@@ -81,6 +81,7 @@ fn expand(method: &str, args: Args, item: ItemFn) -> syn::Result<Tokens> {
             }
             ("Query", Some(inner)) => params.push(inner.to_token_stream()),
             ("Json", Some(inner)) => body = Some(quote!(request_body = #inner)),
+            ("Form", Some(inner)) => body = Some(quote!(request_body(content = #inner, content_type = "application/x-www-form-urlencoded"))),
             ("Multipart", _) => body = Some(quote!(request_body(content_type = "multipart/form-data"))),
             _ => {}
         }
@@ -241,6 +242,12 @@ mod tests {
     fn ok_names_the_success_body_and_keeps_error_inference() {
         let out = expand_str("post", r#""/api/auth/sign-in", ok = Done"#, "async fn sign_in(Json(c): Json<Credentials>) -> ApiResult<impl IntoResponse> { todo!() }");
         assert!(out.contains("body = Done") && out.contains("4XX") && !out.contains("ok ="), "{out}");
+    }
+
+    #[test]
+    fn form_bodies_are_url_encoded() {
+        let out = expand_str("post", r#""/api/auth/sign-in""#, "async fn sign_in(Form(c): Form<Credentials>) -> ApiResult<Json<Done>> { todo!() }");
+        assert!(out.contains("content = Credentials") && out.contains("application/x-www-form-urlencoded"), "{out}");
     }
 
     #[test]

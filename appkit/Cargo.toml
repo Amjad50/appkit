@@ -8,7 +8,7 @@ description = "A small layer over axum: auto-registered routes, OpenAPI, config,
 
 [dependencies]
 appkit-macros = { version = "0.1.0", path = "../appkit-macros" }
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "matched-path", "multipart", "query", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["form", "http1", "json", "matched-path", "multipart", "query", "tokio"] }
 config = { version = "0.15", default-features = false }
 dotenvy = "0.15.7"
 inventory = "0.3.25"
