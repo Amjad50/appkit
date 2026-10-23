@@ -9,6 +9,7 @@
 //! `Path`, `Query`, `Json`, `Form`, `Multipart`, `ApiResult`/`Result`, `Json<T>`, `StatusCode` (204).
 //! Security is the exception: it is resolved by the compiler through `appkit::Security`.
 //! For handlers returning `impl IntoResponse`, name the success body with `ok = Type`.
+//! `body_limit = bytes` raises (or lowers) the server's request body limit for this route only.
 //! Anything else can be passed through: `#[post("/x", responses(...), request_body = ...)]`.
 
 use proc_macro::TokenStream;
@@ -21,6 +22,7 @@ use syn::{FnArg, GenericArgument, ItemFn, LitStr, Meta, PathArguments, ReturnTyp
 struct Args {
     path: LitStr,
     ok: Option<Type>,
+    body_limit: Option<syn::Expr>,
     passthrough: Vec<Meta>,
 }
 
@@ -28,17 +30,19 @@ impl Parse for Args {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let path: LitStr = input.parse()?;
         let mut ok = None;
+        let mut body_limit = None;
         let mut passthrough = Vec::new();
         if input.peek(Token![,]) {
             input.parse::<Token![,]>()?;
             for meta in Punctuated::<Meta, Token![,]>::parse_terminated(input)? {
                 match meta {
                     Meta::NameValue(nv) if nv.path.is_ident("ok") => ok = Some(syn::parse2(nv.value.to_token_stream())?),
+                    Meta::NameValue(nv) if nv.path.is_ident("body_limit") => body_limit = Some(nv.value),
                     other => passthrough.push(other),
                 }
             }
         }
-        Ok(Self { path, ok, passthrough })
+        Ok(Self { path, ok, body_limit, passthrough })
     }
 }
 
@@ -115,6 +119,10 @@ fn expand(method: &str, args: Args, item: ItemFn) -> syn::Result<Tokens> {
     let method_ident = format_ident!("{}", method);
     let ident = &item.sig.ident;
     let lit = &args.path;
+    let body_limit = match &args.body_limit {
+        Some(limit) => quote!(::core::option::Option::Some(#limit)),
+        None => quote!(::core::option::Option::None),
+    };
     Ok(quote! {
         #[::utoipa::path(#method_ident, path = #lit, #(#attrs),*)]
         #item
@@ -125,7 +133,7 @@ fn expand(method: &str, args: Args, item: ItemFn) -> syn::Result<Tokens> {
                     use ::appkit::__private::{Secured as _, Unsecured as _};
                     let mut security = ::std::vec::Vec::new();
                     #(security.extend((&::appkit::__private::Probe::<#types>(::core::marker::PhantomData)).security());)*
-                    ::appkit::__private::register(router, ::appkit::utoipa_axum::routes!(#ident), security)
+                    ::appkit::__private::register(router, ::appkit::utoipa_axum::routes!(#ident), security, #body_limit)
                 },
             }
         }

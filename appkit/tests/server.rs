@@ -28,9 +28,18 @@ async fn greet(State(prefix): State<&'static str>, Path(name): Path<String>) -> 
     Ok(Json(format!("{prefix} {name}")))
 }
 
+#[appkit::post("/api/upload", body_limit = 8)]
+async fn upload(body: String) -> String {
+    body
+}
+
 #[get("/api/private")]
 async fn private(_: User) -> StatusCode {
     StatusCode::NO_CONTENT
+}
+
+async fn post(router: &axum::Router, uri: &str, body: &str) -> StatusCode {
+    router.clone().oneshot(Request::post(uri).body(Body::from(body.to_string())).unwrap()).await.unwrap().status()
 }
 
 async fn call(router: &axum::Router, uri: &str, auth: bool) -> (StatusCode, String) {
@@ -50,6 +59,9 @@ async fn routes_state_security_and_openapi() {
     assert_eq!(call(&router, "/api/greet/ana", false).await, (StatusCode::OK, "\"hi ana\"".into()));
     assert_eq!(call(&router, "/api/private", false).await.0, StatusCode::UNAUTHORIZED);
     assert_eq!(call(&router, "/api/private", true).await.0, StatusCode::NO_CONTENT);
+
+    assert_eq!(post(&router, "/api/upload", "12345678").await, StatusCode::OK);
+    assert_eq!(post(&router, "/api/upload", "123456789").await, StatusCode::PAYLOAD_TOO_LARGE);
 
     let spec = appkit::openapi("Test", "1");
     assert_eq!(spec["paths"]["/api/greet/{name}"]["get"]["parameters"][0]["name"], "name");

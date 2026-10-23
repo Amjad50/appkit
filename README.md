@@ -85,6 +85,8 @@ The macro reads the handler signature and writes `#[utoipa::path]` for you:
   without a body; name the body with `ok = Type`.
 - Every route also documents `4XX`/`5XX` with `ApiError`.
 - Tag: the first path segment after `/api` (and `/admin`), so `/api/admin/users/{id}` → `users`.
+- `body_limit = bytes` sets this route's request body limit (e.g. an upload route above the
+  2 MiB server default).
 - Anything else is passed through to utoipa and overrides inference:
   `#[get("/api/file/{id}", responses((status = 200, content_type = "image/png")))]`.
 

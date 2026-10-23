@@ -54,10 +54,16 @@ pub trait Unsecured {
 
 impl<T> Unsecured for &Probe<T> {}
 
-/// Mounts one macro-generated route and records the security its arguments require.
+/// Mounts one macro-generated route, records the security its arguments require and
+/// applies its own body limit, if any.
 /// An explicit `security(...)` on the route attribute wins.
 #[doc(hidden)]
-pub fn register(mut router: OpenApiRouter, (schemas, mut paths, method): UtoipaMethodRouter, security: Vec<Found>) -> OpenApiRouter {
+pub fn register(
+    mut router: OpenApiRouter,
+    (schemas, mut paths, method): UtoipaMethodRouter,
+    security: Vec<Found>,
+    body_limit: Option<usize>,
+) -> OpenApiRouter {
     if !security.is_empty() {
         let components = router.get_openapi_mut().components.get_or_insert_with(Default::default);
         let mut requirement = SecurityRequirement::default();
@@ -72,5 +78,9 @@ pub fn register(mut router: OpenApiRouter, (schemas, mut paths, method): UtoipaM
             }
         }
     }
+    let method = match body_limit {
+        Some(bytes) => method.layer(axum::extract::DefaultBodyLimit::max(bytes)),
+        None => method,
+    };
     router.routes((schemas, paths, method))
 }
