@@ -14,16 +14,10 @@ where
     dotenvy::dotenv().ok();
     let mut builder = config::Config::builder()
         .add_source(config::Config::try_from(&T::default())?)
-        .add_source(
-            config::Environment::with_prefix(prefix)
-                .prefix_separator("__")
-                .separator("__")
-                .try_parsing(true),
-        );
+        .add_source(config::Environment::with_prefix(prefix).prefix_separator("__").separator("__").try_parsing(true));
     for item in overrides {
-        let (key, value) = item
-            .split_once('=')
-            .ok_or_else(|| config::ConfigError::Message(format!("--set expects key=value, got `{item}`")))?;
+        let (key, value) =
+            item.split_once('=').ok_or_else(|| config::ConfigError::Message(format!("--set expects key=value, got `{item}`")))?;
         builder = builder.set_override(key.trim(), value.trim())?;
     }
     builder.build()?.try_deserialize()

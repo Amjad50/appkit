@@ -6,7 +6,7 @@
 //!    the security of every argument that implements `appkit::Security`.
 //!
 //! Inference reads syntax, not resolved types, so it recognises wrapper names exactly:
-//! `Path`, `Query`, `Json`, `Form`, `Multipart`, `ApiResult`/`Result`, `Json<T>`, `StatusCode`, `()`.
+//! `Path`, `Query`, `Json`, `Form`, `Multipart`, `ApiResult`/`Result`, `Json<T>`, `StatusCode` (204).
 //! Security is the exception: it is resolved by the compiler through `appkit::Security`.
 //! For handlers returning `impl IntoResponse`, name the success body with `ok = Type`.
 //! Anything else can be passed through: `#[post("/x", responses(...), request_body = ...)]`.
@@ -16,9 +16,7 @@ use proc_macro2::TokenStream as Tokens;
 use quote::{ToTokens, format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{
-    FnArg, GenericArgument, ItemFn, LitStr, Meta, PathArguments, ReturnType, Token, Type, parse_macro_input,
-};
+use syn::{FnArg, GenericArgument, ItemFn, LitStr, Meta, PathArguments, ReturnType, Token, Type, parse_macro_input};
 
 struct Args {
     path: LitStr,
@@ -81,7 +79,9 @@ fn expand(method: &str, args: Args, item: ItemFn) -> syn::Result<Tokens> {
             }
             ("Query", Some(inner)) => params.push(inner.to_token_stream()),
             ("Json", Some(inner)) => body = Some(quote!(request_body = #inner)),
-            ("Form", Some(inner)) => body = Some(quote!(request_body(content = #inner, content_type = "application/x-www-form-urlencoded"))),
+            ("Form", Some(inner)) => {
+                body = Some(quote!(request_body(content = #inner, content_type = "application/x-www-form-urlencoded")))
+            }
             ("Multipart", _) => body = Some(quote!(request_body(content_type = "multipart/form-data"))),
             _ => {}
         }
@@ -90,10 +90,8 @@ fn expand(method: &str, args: Args, item: ItemFn) -> syn::Result<Tokens> {
     if !given("params") && !params.is_empty() {
         attrs.push(quote!(params(#(#params),*)));
     }
-    if !given("request_body") {
-        if let Some(body) = body {
-            attrs.push(body);
-        }
+    if let Some(body) = body.filter(|_| !given("request_body")) {
+        attrs.push(body);
     }
     if !given("responses") {
         let ok = match &args.ok {
@@ -153,11 +151,7 @@ const SCALARS: &[&str] = &["String", "str", "Uuid", "i32", "i64", "u32", "u64", 
 
 fn is_params_struct(ty: &Type) -> bool {
     match ty {
-        Type::Path(tp) => tp
-            .path
-            .segments
-            .last()
-            .is_some_and(|s| !SCALARS.contains(&s.ident.to_string().as_str())),
+        Type::Path(tp) => tp.path.segments.last().is_some_and(|s| !SCALARS.contains(&s.ident.to_string().as_str())),
         _ => false,
     }
 }
@@ -171,16 +165,12 @@ fn template_names(path: &str) -> Vec<String> {
 
 /// `/api/admin/tags/{id}` → `tags`; `/api/session` → `session`.
 fn tag_for(path: &str) -> String {
-    path.split('/')
-        .filter(|s| !s.is_empty() && !s.starts_with('{') && *s != "api" && *s != "admin")
-        .next()
-        .unwrap_or("default")
-        .to_string()
+    path.split('/').find(|s| !s.is_empty() && !s.starts_with('{') && *s != "api" && *s != "admin").unwrap_or("default").to_string()
 }
 
 fn success(output: &ReturnType) -> Tokens {
     let ReturnType::Type(_, ty) = output else {
-        return quote!((status = 204, description = "Done"));
+        return quote!((status = 200, description = "Done"));
     };
     // Unwrap `ApiResult<T>` / `Result<T, E>`.
     let ty = match wrapper(ty) {
@@ -190,8 +180,7 @@ fn success(output: &ReturnType) -> Tokens {
     match wrapper(ty) {
         Some((name, Some(inner))) if name == "Json" => quote!((status = 200, description = "Success", body = #inner)),
         Some((name, _)) if name == "StatusCode" => quote!((status = 204, description = "Done")),
-        _ if matches!(ty, Type::Tuple(t) if t.elems.is_empty()) => quote!((status = 204, description = "Done")),
-        _ => quote!((status = 200, description = "Success")),
+        _ => quote!((status = 200, description = "Done")),
     }
 }
 
@@ -221,10 +210,11 @@ mod tests {
     }
 
     #[test]
-    fn query_struct_and_unit_results() {
-        let out = expand_str("get", r#""/api/equipment""#, "async fn get_equipment(Query(q): Query<EquipmentPage>) -> ApiResult<()> { todo!() }");
+    fn query_struct_and_unit_results_are_200_without_body() {
+        let out =
+            expand_str("get", r#""/api/equipment""#, "async fn get_equipment(Query(q): Query<EquipmentPage>) -> ApiResult<()> { todo!() }");
         assert!(out.contains("params (EquipmentPage)"), "{out}");
-        assert!(out.contains("status = 204"), "{out}");
+        assert!(out.contains(r#"(status = 200 , description = "Done")"#), "{out}");
     }
 
     #[test]
@@ -240,13 +230,21 @@ mod tests {
 
     #[test]
     fn ok_names_the_success_body_and_keeps_error_inference() {
-        let out = expand_str("post", r#""/api/auth/sign-in", ok = Done"#, "async fn sign_in(Json(c): Json<Credentials>) -> ApiResult<impl IntoResponse> { todo!() }");
+        let out = expand_str(
+            "post",
+            r#""/api/auth/sign-in", ok = Done"#,
+            "async fn sign_in(Json(c): Json<Credentials>) -> ApiResult<impl IntoResponse> { todo!() }",
+        );
         assert!(out.contains("body = Done") && out.contains("4XX") && !out.contains("ok ="), "{out}");
     }
 
     #[test]
     fn form_bodies_are_url_encoded() {
-        let out = expand_str("post", r#""/api/auth/sign-in""#, "async fn sign_in(Form(c): Form<Credentials>) -> ApiResult<Json<Done>> { todo!() }");
+        let out = expand_str(
+            "post",
+            r#""/api/auth/sign-in""#,
+            "async fn sign_in(Form(c): Form<Credentials>) -> ApiResult<Json<Done>> { todo!() }",
+        );
         assert!(out.contains("content = Credentials") && out.contains("application/x-www-form-urlencoded"), "{out}");
     }
 

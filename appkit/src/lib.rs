@@ -35,3 +35,7 @@ inventory::collect!(Route);
 /// Metrics API (no-op unless the `otel` feature exports them).
 #[cfg(feature = "otel")]
 pub use opentelemetry::global::meter;
+
+#[cfg(doctest)]
+#[doc = include_str!("../../README.md")]
+struct Readme;

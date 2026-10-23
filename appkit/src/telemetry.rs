@@ -53,16 +53,16 @@ pub fn init(service: &str, config: &Config) -> Guard {
     };
     let registry = tracing_subscriber::registry().with(filter).with(fmt);
     #[cfg(feature = "otel")]
-    {
+    let guard = {
         let otel = crate::otel::Providers::from_env(service);
-        let layer = otel.as_ref().map(|p| p.tracing_layer());
-        registry.with(layer).try_init().ok();
-        return Guard { otel };
-    }
+        registry.with(otel.as_ref().map(|p| p.tracing_layer())).try_init().ok();
+        Guard { otel }
+    };
     #[cfg(not(feature = "otel"))]
-    {
+    let guard = {
         let _ = service;
         registry.try_init().ok();
         Guard {}
-    }
+    };
+    guard
 }

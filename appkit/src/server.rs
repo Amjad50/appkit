@@ -26,9 +26,7 @@ type Check = Box<dyn Fn() -> BoxFuture<Result<(), String>> + Send + Sync>;
 
 /// Builds the OpenAPI document from every `#[get]`/`#[post]`/... route in the binary.
 pub fn openapi(title: &str, version: &str) -> serde_json::Value {
-    let mut spec = serde_json::to_value(collect(title, version).1).expect("OpenAPI serializes");
-    require_response_fields(&mut spec);
-    spec
+    collect(title, version).1
 }
 
 /// serde always writes every field of a response (as `null` when empty), but utoipa marks
@@ -42,12 +40,11 @@ fn require_response_fields(spec: &mut serde_json::Value) {
     fn refs(value: &Value, schemas: &Value, found: &mut HashSet<String>) {
         match value {
             Value::Object(map) => {
-                if let Some(name) = map.get("$ref").and_then(Value::as_str).and_then(|r| r.rsplit('/').next()) {
-                    if found.insert(name.to_string()) {
-                        if let Some(schema) = schemas.get(name) {
-                            refs(schema, schemas, found);
-                        }
-                    }
+                if let Some(name) = map.get("$ref").and_then(Value::as_str).and_then(|r| r.rsplit('/').next())
+                    && found.insert(name.to_string())
+                    && let Some(schema) = schemas.get(name)
+                {
+                    refs(schema, schemas, found);
                 }
                 map.values().for_each(|v| refs(v, schemas, found));
             }
@@ -91,12 +88,15 @@ fn require_response_fields(spec: &mut serde_json::Value) {
     }
 }
 
-fn collect(title: &str, version: &str) -> (Router, OpenApi) {
+fn collect(title: &str, version: &str) -> (Router, serde_json::Value) {
     let mut routes = OpenApiRouter::with_openapi(OpenApi::new(Info::new(title, version), Paths::new()));
     for route in inventory::iter::<Route> {
         routes = (route.register)(routes);
     }
-    routes.split_for_parts()
+    let (router, openapi) = routes.split_for_parts();
+    let mut spec = serde_json::to_value(openapi).expect("OpenAPI serializes");
+    require_response_fields(&mut spec);
+    (router, spec)
 }
 
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -178,10 +178,8 @@ impl Server {
     }
 
     fn build(self) -> (Router, Vec<(String, Task)>, CancellationToken) {
-        let (api, openapi) = collect(&self.title, &self.version);
-        let mut openapi = serde_json::to_value(openapi).expect("OpenAPI serializes");
-        require_response_fields(&mut openapi);
-        let spec = serde_json::to_string(&openapi).expect("OpenAPI serializes");
+        let (api, spec) = collect(&self.title, &self.version);
+        let spec = spec.to_string();
         let docs = Html(DOCS.replace("{title}", &self.title));
         let checks = std::sync::Arc::new(self.checks);
         let mut router = api
