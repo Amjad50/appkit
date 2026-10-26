@@ -8,18 +8,13 @@ easy for people and coding agents to use correctly.
 ```toml
 [dependencies]
 appkit = { git = "https://github.com/Amjad50/appkit" }
-axum = "0.8"
 serde = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["full"] }
-utoipa = "6"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
 ```rust,no_run
-use appkit::{ApiError, ApiResult, State, get, post};
-use axum::Json;
-use axum::extract::Path;
+use appkit::prelude::*;
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 #[derive(Clone)]
 struct App {
@@ -32,13 +27,22 @@ struct Hello {
     message: String,
 }
 
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct Shout {
+    /// Upper-case the greeting.
+    #[serde(default)]
+    loud: bool,
+}
+
 /// Says hello. Doc comments become the OpenAPI summary and description.
 #[get("/api/hello/{name}")]
-async fn hello(State(app): State<App>, Path(name): Path<String>) -> ApiResult<Json<Hello>> {
-    if name.is_empty() {
+async fn hello(State(app): State<App>, Path(name): Path<String>, Query(shout): Query<Shout>) -> ApiResult<Json<Hello>> {
+    if name.trim().is_empty() {
         return Err(ApiError::bad_request("Name is required."));
     }
-    Ok(Json(Hello { message: format!("{}, {name}", app.greeting) }))
+    let message = format!("{}, {name}", app.greeting);
+    Ok(Json(Hello { message: if shout.loud { message.to_uppercase() } else { message } }))
 }
 
 #[post("/api/echo")]
@@ -55,6 +59,12 @@ async fn main() -> Result<(), String> {
         .await
 }
 ```
+
+`use appkit::prelude::*;` in every module with routes or API types. It brings in the macros,
+`State`, `ApiError`, the common axum extractors, `ToSchema`/`IntoParams` and the `utoipa` crate
+that their generated code needs, so you do not add `axum` or `utoipa` yourself. The rest of axum
+and utoipa is under `appkit::axum` and `appkit::utoipa` (for example `appkit::axum::Router`).
+[`example/`](example) is this program as a crate, built in CI.
 
 Every route marked with `#[get]`, `#[post]`, `#[put]`, `#[patch]` or `#[delete]` anywhere in the
 binary is mounted automatically, so there is no router to keep in sync.
@@ -90,7 +100,8 @@ The macro reads the handler signature and writes `#[utoipa::path]` for you:
 - Anything else is passed through to utoipa and overrides inference:
   `#[get("/api/file/{id}", responses((status = 200, content_type = "image/png")))]`.
 
-Response types usually derive `Serialize` and `ToSchema`. In the generated document every field of
+Response types usually derive `Serialize` and `ToSchema`. A struct used in `Query<T>` derives
+`IntoParams` with `#[into_params(parameter_in = Query)]`. In the generated document every field of
 a response-only schema is `required`, because serde always writes it (as `null` when it is `None`).
 This way generated clients get `T | null` instead of `T | null | undefined`.
 
@@ -114,7 +125,7 @@ that takes the extractor as an argument is then documented as requiring it, and 
 to the document. The "Authorize" button in `/api/docs` uses it.
 
 ```rust,ignore
-use utoipa::openapi::security::{Flow, OAuth2, Password, Scopes, SecurityScheme};
+use appkit::utoipa::openapi::security::{Flow, OAuth2, Password, Scopes, SecurityScheme};
 
 impl appkit::Security for Admin {
     const NAME: &'static str = "session";

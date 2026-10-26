@@ -1,0 +1,11 @@
+[package]
+name = "example"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+# Only appkit, serde and tokio: axum and utoipa come through `appkit::prelude`.
+[dependencies]
+appkit = { path = "../appkit" }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

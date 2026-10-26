@@ -1,7 +1,7 @@
 //! `#[get("/path")]`, `#[post(...)]`, ... for appkit.
 //!
 //! Each attribute keeps the handler as written and adds:
-//! 1. `#[utoipa::path(...)]`, inferred from the signature (params, body, responses, tag);
+//! 1. `#[appkit::utoipa::path(...)]`, inferred from the signature (params, body, responses, tag);
 //! 2. an `inventory` entry so `appkit::Server` mounts the route and documents it, including
 //!    the security of every argument that implements `appkit::Security`.
 //!
@@ -124,7 +124,7 @@ fn expand(method: &str, args: Args, item: ItemFn) -> syn::Result<Tokens> {
         None => quote!(::core::option::Option::None),
     };
     Ok(quote! {
-        #[::utoipa::path(#method_ident, path = #lit, #(#attrs),*)]
+        #[::appkit::utoipa::path(#method_ident, path = #lit, #(#attrs),*)]
         #item
 
         ::appkit::inventory::submit! {
@@ -133,7 +133,12 @@ fn expand(method: &str, args: Args, item: ItemFn) -> syn::Result<Tokens> {
                     use ::appkit::__private::{Secured as _, Unsecured as _};
                     let mut security = ::std::vec::Vec::new();
                     #(security.extend((&::appkit::__private::Probe::<#types>(::core::marker::PhantomData)).security());)*
-                    ::appkit::__private::register(router, ::appkit::utoipa_axum::routes!(#ident), security, #body_limit)
+                    let route = {
+                        // `routes!` names `axum` and `utoipa` unqualified; resolve them through appkit.
+                        use ::appkit::{axum, utoipa};
+                        ::appkit::utoipa_axum::routes!(#ident)
+                    };
+                    ::appkit::__private::register(router, route, security, #body_limit)
                 },
             }
         }
