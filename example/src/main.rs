@@ -1,4 +1,4 @@
-use appkit::prelude::*;
+use axkit::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
@@ -37,8 +37,8 @@ async fn echo(Json(body): Json<Hello>) -> Json<Hello> {
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    let _logs = appkit::telemetry::init("hello", &Default::default());
-    appkit::Server::new("Hello", env!("CARGO_PKG_VERSION"))
+    let _logs = axkit::telemetry::init("hello", &Default::default());
+    axkit::Server::new("Hello", env!("CARGO_PKG_VERSION"))
         .state(App { greeting: "Hello".into() })
         .serve("127.0.0.1:3000".parse().unwrap())
         .await

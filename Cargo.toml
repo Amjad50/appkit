@@ -1,10 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["appkit", "appkit-macros", "example"]
+members = ["axkit", "axkit-macros", "example"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
 authors = ["Amjad Alsharafi"]
-repository = "https://github.com/Amjad50/appkit"
+repository = "https://github.com/Amjad50/axkit"

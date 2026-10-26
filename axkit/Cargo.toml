@@ -1,5 +1,5 @@
 [package]
-name = "appkit"
+name = "axkit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,7 +11,7 @@ categories = ["web-programming::http-server"]
 description = "A small layer over axum: auto-registered routes, OpenAPI, config, telemetry, tasks."
 
 [dependencies]
-appkit-macros = { version = "0.1.0", path = "../appkit-macros" }
+axkit-macros = { version = "0.1.0", path = "../axkit-macros" }
 axum = { version = "0.8", default-features = false, features = ["form", "http1", "json", "matched-path", "multipart", "query", "tokio"] }
 config = { version = "0.15", default-features = false }
 dotenvy = "0.15.7"

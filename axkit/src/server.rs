@@ -133,7 +133,7 @@ impl Server {
         }
     }
 
-    /// Makes `appkit::State<T>` available to every route.
+    /// Makes `axkit::State<T>` available to every route.
     pub fn state<T: Clone + Send + Sync + 'static>(mut self, value: T) -> Self {
         self.layers.push(Box::new(move |r| r.layer(axum::Extension(value))));
         self

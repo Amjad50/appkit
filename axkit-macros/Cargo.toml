@@ -1,5 +1,5 @@
 [package]
-name = "appkit-macros"
+name = "axkit-macros"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ repository.workspace = true
 readme = "../README.md"
 keywords = ["axum", "openapi", "macro", "utoipa"]
 categories = ["web-programming::http-server"]
-description = "Route attribute macros for appkit: axum routing, OpenAPI and tracing from one annotation."
+description = "Route attribute macros for axkit: axum routing, OpenAPI and tracing from one annotation."
 
 [lib]
 proc-macro = true

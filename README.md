@@ -1,19 +1,19 @@
-# appkit
+# axkit
 
-A small layer over [axum](https://docs.rs/axum). You annotate plain axum handlers, and appkit
+A small layer over [axum](https://docs.rs/axum). You annotate plain axum handlers, and axkit
 registers them, documents them in OpenAPI and serves them, with config, logging, background tasks
 and graceful shutdown built in. It is small enough to read in one sitting, and it is meant to be
 easy for people and coding agents to use correctly.
 
 ```toml
 [dependencies]
-appkit = { git = "https://github.com/Amjad50/appkit" }
+axkit = { git = "https://github.com/Amjad50/axkit" }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
 ```rust,no_run
-use appkit::prelude::*;
+use axkit::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
@@ -52,18 +52,18 @@ async fn echo(Json(body): Json<Hello>) -> Json<Hello> {
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    let _logs = appkit::telemetry::init("hello", &Default::default());
-    appkit::Server::new("Hello", env!("CARGO_PKG_VERSION"))
+    let _logs = axkit::telemetry::init("hello", &Default::default());
+    axkit::Server::new("Hello", env!("CARGO_PKG_VERSION"))
         .state(App { greeting: "Hello".into() })
         .serve("127.0.0.1:3000".parse().unwrap())
         .await
 }
 ```
 
-`use appkit::prelude::*;` in every module with routes or API types. It brings in the macros,
+`use axkit::prelude::*;` in every module with routes or API types. It brings in the macros,
 `State`, `ApiError`, the common axum extractors, `ToSchema`/`IntoParams` and the `utoipa` crate
 that their generated code needs, so you do not add `axum` or `utoipa` yourself. The rest of axum
-and utoipa is under `appkit::axum` and `appkit::utoipa` (for example `appkit::axum::Router`).
+and utoipa is under `axkit::axum` and `axkit::utoipa` (for example `axkit::axum::Router`).
 [`example/`](example) is this program as a crate, built in CI.
 
 Every route marked with `#[get]`, `#[post]`, `#[put]`, `#[patch]` or `#[delete]` anywhere in the
@@ -120,14 +120,14 @@ internals never reach clients.
 
 ## Authentication
 
-Enforce authentication in an axum extractor, then implement `appkit::Security` for it. Every route
+Enforce authentication in an axum extractor, then implement `axkit::Security` for it. Every route
 that takes the extractor as an argument is then documented as requiring it, and the scheme is added
 to the document. The "Authorize" button in `/api/docs` uses it.
 
 ```rust,ignore
-use appkit::utoipa::openapi::security::{Flow, OAuth2, Password, Scopes, SecurityScheme};
+use axkit::utoipa::openapi::security::{Flow, OAuth2, Password, Scopes, SecurityScheme};
 
-impl appkit::Security for Admin {
+impl axkit::Security for Admin {
     const NAME: &'static str = "session";
     fn scheme() -> SecurityScheme {
         SecurityScheme::OAuth2(OAuth2::new([Flow::Password(Password::new("/api/auth/sign-in", Scopes::new()))]))
@@ -142,9 +142,9 @@ impl appkit::Security for Admin {
 ```rust,ignore
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
-struct Config { http: Http, telemetry: appkit::telemetry::Config }
+struct Config { http: Http, telemetry: axkit::telemetry::Config }
 
-let config: Config = appkit::config::load("MYAPP", &cli_overrides)?;
+let config: Config = axkit::config::load("MYAPP", &cli_overrides)?;
 ```
 
 Layers, from lowest to highest priority:
@@ -157,7 +157,7 @@ Layers, from lowest to highest priority:
 ## Background tasks and shutdown
 
 ```rust,ignore
-server.task("worker", |stop: appkit::CancellationToken| async move {
+server.task("worker", |stop: axkit::CancellationToken| async move {
     stop.cancelled().await;
     Ok::<_, String>(())
 })
@@ -172,13 +172,13 @@ long-lived responses (server-sent events, streams) at that point.
 
 `telemetry::init(service, &config)` writes `pretty` or `json` logs. `RUST_LOG` overrides
 `config.filter`. With the `otel` feature enabled and `OTEL_EXPORTER_OTLP_ENDPOINT` set, spans and
-metrics are also exported over OTLP/gRPC, and `appkit::meter(name)` gives you a metrics meter. Keep
+metrics are also exported over OTLP/gRPC, and `axkit::meter(name)` gives you a metrics meter. Keep
 the returned guard alive until exit.
 
 ## Tests
 
 `Server::into_router()` gives you the assembled `axum::Router` without binding a port, so you can
-drive it with `tower::ServiceExt::oneshot`. `appkit::openapi(title, version)` returns the document,
+drive it with `tower::ServiceExt::oneshot`. `axkit::openapi(title, version)` returns the document,
 for example to write `openapi.json` for a client generator.
 
 ## License

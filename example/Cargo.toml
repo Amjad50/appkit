@@ -4,8 +4,8 @@ version = "0.0.0"
 edition.workspace = true
 publish = false
 
-# Only appkit, serde and tokio: axum and utoipa come through `appkit::prelude`.
+# Only axkit, serde and tokio: axum and utoipa come through `axkit::prelude`.
 [dependencies]
-appkit = { path = "../appkit" }
+axkit = { path = "../axkit" }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

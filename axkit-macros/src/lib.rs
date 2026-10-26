@@ -1,13 +1,13 @@
-//! `#[get("/path")]`, `#[post(...)]`, ... for appkit.
+//! `#[get("/path")]`, `#[post(...)]`, ... for axkit.
 //!
 //! Each attribute keeps the handler as written and adds:
-//! 1. `#[appkit::utoipa::path(...)]`, inferred from the signature (params, body, responses, tag);
-//! 2. an `inventory` entry so `appkit::Server` mounts the route and documents it, including
-//!    the security of every argument that implements `appkit::Security`.
+//! 1. `#[axkit::utoipa::path(...)]`, inferred from the signature (params, body, responses, tag);
+//! 2. an `inventory` entry so `axkit::Server` mounts the route and documents it, including
+//!    the security of every argument that implements `axkit::Security`.
 //!
 //! Inference reads syntax, not resolved types, so it recognises wrapper names exactly:
 //! `Path`, `Query`, `Json`, `Form`, `Multipart`, `ApiResult`/`Result`, `Json<T>`, `StatusCode` (204).
-//! Security is the exception: it is resolved by the compiler through `appkit::Security`.
+//! Security is the exception: it is resolved by the compiler through `axkit::Security`.
 //! For handlers returning `impl IntoResponse`, name the success body with `ok = Type`.
 //! `body_limit = bytes` raises (or lowers) the server's request body limit for this route only.
 //! Anything else can be passed through: `#[post("/x", responses(...), request_body = ...)]`.
@@ -104,8 +104,8 @@ fn expand(method: &str, args: Args, item: ItemFn) -> syn::Result<Tokens> {
         };
         attrs.push(quote!(responses(
             #ok,
-            (status = "4XX", description = "Request rejected", body = ::appkit::ApiError),
-            (status = "5XX", description = "Server error", body = ::appkit::ApiError),
+            (status = "4XX", description = "Request rejected", body = ::axkit::ApiError),
+            (status = "5XX", description = "Server error", body = ::axkit::ApiError),
         )));
     }
     if !given("tag") && !given("tags") {
@@ -124,21 +124,21 @@ fn expand(method: &str, args: Args, item: ItemFn) -> syn::Result<Tokens> {
         None => quote!(::core::option::Option::None),
     };
     Ok(quote! {
-        #[::appkit::utoipa::path(#method_ident, path = #lit, #(#attrs),*)]
+        #[::axkit::utoipa::path(#method_ident, path = #lit, #(#attrs),*)]
         #item
 
-        ::appkit::inventory::submit! {
-            ::appkit::Route {
+        ::axkit::inventory::submit! {
+            ::axkit::Route {
                 register: |router| {
-                    use ::appkit::__private::{Secured as _, Unsecured as _};
+                    use ::axkit::__private::{Secured as _, Unsecured as _};
                     let mut security = ::std::vec::Vec::new();
-                    #(security.extend((&::appkit::__private::Probe::<#types>(::core::marker::PhantomData)).security());)*
+                    #(security.extend((&::axkit::__private::Probe::<#types>(::core::marker::PhantomData)).security());)*
                     let route = {
-                        // `routes!` names `axum` and `utoipa` unqualified; resolve them through appkit.
-                        use ::appkit::{axum, utoipa};
-                        ::appkit::utoipa_axum::routes!(#ident)
+                        // `routes!` names `axum` and `utoipa` unqualified; resolve them through axkit.
+                        use ::axkit::{axum, utoipa};
+                        ::axkit::utoipa_axum::routes!(#ident)
                     };
-                    ::appkit::__private::register(router, route, security, #body_limit)
+                    ::axkit::__private::register(router, route, security, #body_limit)
                 },
             }
         }

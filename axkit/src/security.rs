@@ -8,7 +8,7 @@ use utoipa_axum::router::{OpenApiRouter, UtoipaMethodRouter};
 /// extractor; this only describes it. `Option<T>` arguments are not treated as required.
 ///
 /// ```ignore
-/// impl appkit::Security for Admin {
+/// impl axkit::Security for Admin {
 ///     const NAME: &'static str = "session";
 ///     fn scheme() -> SecurityScheme {
 ///         SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("my_session")))

@@ -48,9 +48,9 @@ mod tests {
     #[test]
     fn layers_defaults_env_and_overrides() {
         // SAFETY: test-only process environment changes with a unique prefix.
-        unsafe { std::env::set_var("APPKITTEST__MQTT__ALLOW_PLAINTEXT", "true") };
-        let s: Settings = super::load("APPKITTEST", &["mqtt.port=8883".into(), "name = ward".into()]).unwrap();
+        unsafe { std::env::set_var("AXKITTEST__MQTT__ALLOW_PLAINTEXT", "true") };
+        let s: Settings = super::load("AXKITTEST", &["mqtt.port=8883".into(), "name = ward".into()]).unwrap();
         assert_eq!(s, Settings { name: "ward".into(), mqtt: Mqtt { port: 8883, allow_plaintext: true } });
-        assert!(super::load::<Settings>("APPKITTEST", &["broken".into()]).is_err());
+        assert!(super::load::<Settings>("AXKITTEST", &["broken".into()]).is_err());
     }
 }
